@@ -1,4 +1,5 @@
 import { FormEvent, useMemo, useState, useRef } from 'react'
+import { filterClients, nearestClient } from './services/clientSelection'
 import { ClientMap } from './components/ClientMap'
 import { distanceInMeters, formatDistance } from './services/distance'
 import { getCurrentLocation } from './services/geolocation'
@@ -14,6 +15,7 @@ export function App() {
   const [showForm, setShowForm] = useState(false)
   const [editingClient, setEditingClient] = useState<Client | null>(null)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
   const [neighborhood, setNeighborhood] = useState('all')
   const [showClients, setShowClients] = useState(false)
   const [visits, setVisits] = useState<Visit[]>(() => listVisits())
@@ -46,30 +48,55 @@ export function App() {
     } catch (e) { setError(e instanceof Error ? e.message : 'No hay espacio para guardar el respaldo.'); setImported(null) }
   }
   const neighborhoods = useMemo(() => [...new Set(clients.map((c) => c.neighborhood).filter((n): n is string => Boolean(n)))].sort(), [clients])
-  const visible = useMemo(() => neighborhood === 'all' ? clients : clients.filter((c) => c.neighborhood === neighborhood), [clients, neighborhood])
-  const pending = visible.filter((c) => c.visitStatus !== 'visited')
-  const nearest = useMemo(() => !position || !visible.length ? null : [...visible].sort((a, b) => position ? distanceInMeters(position, a.coordinates) - distanceInMeters(position, b.coordinates) : a.name.localeCompare(b.name)).map((client) => ({ client, distance: distanceInMeters(position, client.coordinates) })).sort((a, b) => a.distance - b.distance)[0], [position, visible])
+  const visible = useMemo(() => filterClients(clients, neighborhood, query), [clients, neighborhood, query])
+  const pending = visible.filter(c => c.visitStatus !== 'visited')
+  const nearest = useMemo(() => nearestClient(visible, position), [position, visible])
+  const nextPending = useMemo(() => nearestClient(visible, position, true), [position, visible])
+
+  async function selectNextPending() {
+    const fresh = await locate()
+    if (!fresh) return
+    const next = nearestClient(visible, fresh, true)
+    if (next) { setSelectedId(next.client.id); setNotice(`Siguiente pendiente: ${next.client.name}. Distancia en línea recta: ${formatDistance(next.distance)}.`) }
+    else { setSelectedId(null); setNotice('No quedan clientes pendientes con estos filtros.') }
+  }
 
   async function locate() {
     setIsLocating(true)
-    try { const p = await getCurrentLocation(); setPosition(p); setMessage(`Ubicación obtenida con precisión aproximada de ${Math.round(p.accuracy ?? 0)} m.`) }
-    catch (e) { setMessage(e instanceof Error ? e.message : 'No se pudo obtener la ubicación.') }
+    try { const p = await getCurrentLocation(); setPosition(p); setMessage(`Ubicación obtenida con precisión aproximada de ${Math.round(p.accuracy ?? 0)} m.`); return p }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'No se pudo obtener la ubicación.'); return null }
     finally { setIsLocating(false) }
   }
 
-  function openForm() { setError(''); if (!position) { setError('Primero obtén tu ubicación para guardar las coordenadas actuales.'); void locate(); return }; setShowForm(true) }
+  async function openForm() {
+    setError('')
+    const fresh = await locate()
+    if (fresh) setShowForm(true)
+    else setError('No se pudo registrar la ubicación actual. Activa el GPS e inténtalo de nuevo.')
+  }
+
   function saveClient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!position) return
     const form = new FormData(event.currentTarget), code = String(form.get('code') ?? '').trim().toUpperCase(), name = String(form.get('name') ?? '').trim(), area = String(form.get('neighborhood') ?? '').trim()
+    if (!code || !name) { setError('Completa el código y el nombre.'); return }
     if (clients.some((c) => c.code.toLowerCase() === code.toLowerCase())) { setError('Ya existe un cliente con ese código.'); return }
     const client: Client = { id: crypto.randomUUID(), code, name, coordinates: position, createdAt: new Date().toISOString(), neighborhood: area || undefined, visitStatus: 'pending' }
-    clientRepository.create(client); setClients((current) => [...current, client]); setShowForm(false); setError('')
+    try { clientRepository.create(client); setClients((current) => [...current, client]); setShowForm(false); setError('') }
+    catch { setError('No se pudo guardar el cliente. Revisa el espacio del navegador e inténtalo de nuevo.') }
   }
   function setVisitStatus(client: Client, visited: boolean) {
     const date = new Date().toISOString(), updated: Client = { ...client, visitStatus: visited ? 'visited' : 'pending', lastVisitAt: visited ? date : undefined }
     const nextClients = clients.map(c => c.id === client.id ? updated : c)
     const nextVisits: Visit[] = visited ? [...visits, { id: crypto.randomUUID(), clientId: client.id, createdAt: date, coordinates: position ?? undefined }] : visits
-    try { saveData(nextClients, nextVisits); setClients(nextClients); setVisits(nextVisits) }
+    try {
+      saveData(nextClients, nextVisits); setClients(nextClients); setVisits(nextVisits); setError('')
+      if (visited) {
+        const remaining = filterClients(nextClients, neighborhood, query)
+        const next = nearestClient(remaining, position, true)
+        setSelectedId(next?.client.id ?? null)
+        setNotice(next ? `Visita guardada. Siguiente pendiente: ${next.client.name}. Calculado con tu última ubicación; pulsa «Siguiente cliente pendiente» para actualizarla.` : remaining.some(c => c.visitStatus !== 'visited') ? 'Visita guardada. Activa tu ubicación para encontrar el siguiente pendiente.' : 'Visita guardada. No quedan pendientes con estos filtros.')
+      }
+    }
     catch { setError('No se pudo guardar la visita. Exporta un respaldo y revisa el espacio del navegador.') }
   }
   function saveEdit(event: FormEvent<HTMLFormElement>) {
@@ -87,18 +114,21 @@ export function App() {
   return <main className="app-shell">
     <header className="topbar"><div><p className="eyebrow">TU DÍA, MEJOR ORGANIZADO</p><h1>TAT<span className="brand-dot">.</span></h1><p className="subtitle">Cada cliente. Un paso más cerca.</p></div><button className="locate-button" onClick={() => void locate()} disabled={isLocating}>{isLocating ? 'Buscando…' : '⌖ Mi ubicación'}</button></header>
     <section className="status-card" aria-live="polite"><div className="status-icon">📍</div><div><p className="eyebrow">UBICACIÓN ACTUAL</p><p className="status-copy">{message}</p></div></section>
-    <section className="summary-grid"><article className="metric"><span>CLIENTES</span><strong>{visible.length}</strong><small>registrados</small></article><article className="metric pending-metric"><span>PENDIENTES</span><strong>{pending.length}</strong><small>por visitar</small></article><article className="nearest-card"><span>TU PRÓXIMA PARADA</span>{nearest ? <><strong>{nearest.client.name}</strong><small>{nearest.client.code} · {formatDistance(nearest.distance)} en línea recta</small><button className="text-button" onClick={() => setSelectedId(nearest.client.id)}>Ver cliente más cercano ↗</button></> : <small>{position ? 'Aún no hay clientes registrados.' : 'Obtén tu ubicación para calcularlo.'}</small>}</article></section>
-    <section className="filter-row"><label htmlFor="area">Barrio</label><select id="area" value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)}><option value="all">Todos los barrios</option>{neighborhoods.map((n) => <option key={n}>{n}</option>)}</select></section>
+    <section className="summary-grid"><article className="metric"><span>CLIENTES</span><strong>{visible.length}</strong><small>registrados</small></article><article className="metric pending-metric"><span>PENDIENTES</span><strong>{pending.length}</strong><small>por visitar</small></article><article className="nearest-card"><span>CLIENTE MÁS CERCANO</span>{nearest ? <><strong>{nearest.client.name}</strong><small>{nearest.client.code} · {formatDistance(nearest.distance)} en línea recta</small><button className="text-button" onClick={() => setSelectedId(nearest.client.id)}>Ver cliente más cercano ↗</button></> : <small>{position ? 'No hay clientes con estos filtros.' : 'Obtén tu ubicación para calcularlo.'}</small>}</article></section>
+    <section className="search-section" role="search"><label htmlFor="client-search">Buscar clientes</label><div className="search-control"><input id="client-search" type="search" placeholder="Nombre, código o barrio" value={query} onChange={e => { setQuery(e.target.value); setSelectedId(null) }} />{query && <button onClick={() => { setQuery(''); setSelectedId(null) }}>Limpiar</button>}</div></section>
+    <section className="filter-row"><label htmlFor="area">Barrio</label><select id="area" value={neighborhood} onChange={(e) => { setNeighborhood(e.target.value); setSelectedId(null) }}><option value="all">Todos los barrios</option>{neighborhoods.map((n) => <option key={n}>{n}</option>)}</select></section>
+    <section className="next-stop" aria-labelledby="next-stop-title"><div><p className="eyebrow">CONTINÚA TU RECORRIDO</p><h2 id="next-stop-title">{nextPending ? nextPending.client.name : pending.length ? 'Encuentra tu siguiente parada' : 'Sin pendientes en esta vista'}</h2><p>{nextPending ? `${nextPending.client.code} · ${formatDistance(nextPending.distance)} en línea recta` : pending.length ? 'Activa tu ubicación para elegir el pendiente más cercano.' : visible.length ? 'Todos los clientes de esta vista están visitados.' : 'Prueba otra búsqueda o registra tu primer cliente.'}</p><small>Se respetan la búsqueda y el barrio seleccionados.</small></div><button className="route-link" onClick={() => void selectNextPending()} disabled={isLocating || !pending.length}>{isLocating ? 'Actualizando ubicación…' : 'Siguiente cliente pendiente'}</button></section>
+    {query.trim() && <p className="search-count" role="status">{visible.length} resultado{visible.length === 1 ? '' : 's'} para «{query.trim()}»</p>}
     <section className="map-section"><div className="map-heading"><h2>Mapa de clientes</h2><span><i className="legend you" /> Tú <i className="legend client" /> Pendiente <i className="legend visited" /> Visitado</span></div><ClientMap clients={visible} position={position} selectedId={selectedId} onSelect={setSelectedId} /></section>
-    {selected && <section className="destination-card"><div><p className="eyebrow">CLIENTE SELECCIONADO</p><h2>{selected.name}</h2><p>{selected.code}{selected.neighborhood ? ` · ${selected.neighborhood}` : ''}</p><p>{position ? `${formatDistance(distanceInMeters(position, selected.coordinates))} en línea recta desde ti` : 'Activa tu ubicación para calcular la distancia.'}</p>{selected.notes && <p>{selected.notes}</p>}</div><a className="route-link" target="_blank" rel="noreferrer" href={`https://www.google.com/maps/dir/?api=1&destination=${selected.coordinates.latitude},${selected.coordinates.longitude}${position ? `&origin=${position.latitude},${position.longitude}` : ''}`}>Cómo llegar ↗</a><button className="text-button" onClick={() => setSelectedId(null)}>Cerrar</button></section>}
+    {selected && <section className="destination-card"><div><p className="eyebrow">CLIENTE SELECCIONADO</p><h2>{selected.name}</h2><p>{selected.code}{selected.neighborhood ? ` · ${selected.neighborhood}` : ''}</p><p>{position ? `${formatDistance(distanceInMeters(position, selected.coordinates))} en línea recta desde ti` : 'Activa tu ubicación para calcular la distancia.'}</p>{selected.notes && <p>{selected.notes}</p>}</div><a className="route-link" target="_blank" rel="noreferrer" href={`https://www.google.com/maps/dir/?api=1&destination=${selected.coordinates.latitude},${selected.coordinates.longitude}${position ? `&origin=${position.latitude},${position.longitude}` : ''}`}>Cómo llegar ↗</a><button className="visit-button" disabled={selected.visitStatus === 'visited'} onClick={() => setVisitStatus(selected, true)}>{selected.visitStatus === 'visited' ? 'Ya visitado' : 'Marcar visitado y continuar'}</button><button className="text-button" onClick={() => setSelectedId(null)}>Cerrar</button></section>}
     {notice && <p className="notice" role="status">{notice}</p>}
-    {error && <p className="form-alert" role="alert">{error}</p>}<button className="primary-action" onClick={openForm}>＋ Registrar cliente aquí</button><button className="secondary-action" onClick={() => setShowClients((value) => !value)}>{showClients ? 'Ocultar clientes' : `Ver clientes y visitas (${visible.length})`}</button>
-    {showClients && <section className="client-list"><h2>Clientes {neighborhood === 'all' ? '' : `en ${neighborhood}`}</h2>{visible.length === 0 ? <p className="empty-state">Todavía no hay clientes en esta vista.</p> : [...visible].sort((a, b) => position ? distanceInMeters(position, a.coordinates) - distanceInMeters(position, b.coordinates) : a.name.localeCompare(b.name)).map((client) => { const done = client.visitStatus === 'visited', count = visits.filter((v) => v.clientId === client.id).length; return <article className="client-row" key={client.id}><div><button className="client-name" onClick={() => setSelectedId(client.id)}>{client.name} ↗</button><small>{position ? `${formatDistance(distanceInMeters(position, client.coordinates))} · ` : ''}{client.code}{client.neighborhood ? ` · ${client.neighborhood}` : ''}</small><small>{done ? `✓ Visitado · ${client.lastVisitAt ? new Date(client.lastVisitAt).toLocaleDateString('es-CO') : 'Registrado'}` : '● Pendiente'}{count ? ` · ${count} visita${count === 1 ? '' : 's'}` : ''}</small></div><div className="row-actions"><button className={done ? 'undo-button' : 'visit-button'} onClick={() => setVisitStatus(client, !done)}>{done ? 'Deshacer' : 'Visitar'}</button><button className="edit-button" onClick={() => { setError(''); setEditingClient(client) }}>Editar</button><button className="delete-button" onClick={() => deleteClient(client)} aria-label={`Eliminar ${client.name}`}>×</button></div></article> })}</section>}
+    {error && <p className="form-alert" role="alert">{error}</p>}<button className="primary-action" disabled={isLocating} onClick={() => void openForm()}>＋ Registrar cliente aquí</button><button className="secondary-action" onClick={() => setShowClients((value) => !value)}>{showClients ? 'Ocultar clientes' : `Ver clientes y visitas (${visible.length})`}</button>
+    {(showClients || Boolean(query.trim())) && <section className="client-list"><h2>Clientes {neighborhood === 'all' ? '' : `en ${neighborhood}`}</h2>{visible.length === 0 ? <p className="empty-state">No hay coincidencias. Cambia la búsqueda o el barrio.</p> : [...visible].sort((a, b) => position ? distanceInMeters(position, a.coordinates) - distanceInMeters(position, b.coordinates) : a.name.localeCompare(b.name)).map((client) => { const done = client.visitStatus === 'visited', count = visits.filter((v) => v.clientId === client.id).length; return <article className="client-row" key={client.id}><div><button className="client-name" onClick={() => setSelectedId(client.id)}>{client.name} ↗</button><small>{position ? `${formatDistance(distanceInMeters(position, client.coordinates))} · ` : ''}{client.code}{client.neighborhood ? ` · ${client.neighborhood}` : ''}</small><small>{done ? `✓ Visitado · ${client.lastVisitAt ? new Date(client.lastVisitAt).toLocaleDateString('es-CO') : 'Registrado'}` : '● Pendiente'}{count ? ` · ${count} visita${count === 1 ? '' : 's'}` : ''}</small></div><div className="row-actions"><button className={done ? 'undo-button' : 'visit-button'} onClick={() => setVisitStatus(client, !done)}>{done ? 'Deshacer' : 'Visitar'}</button><button className="edit-button" onClick={() => { setError(''); setEditingClient(client) }}>Editar</button><button className="delete-button" onClick={() => deleteClient(client)} aria-label={`Eliminar ${client.name}`}>×</button></div></article> })}</section>}
     <section className="backup-card"><div><p className="eyebrow">TODO TU RECORRIDO, CONTIGO</p><h2>Tu recorrido, siempre a mano.</h2><p>Guarda clientes, ubicaciones, notas e historial para recuperarlos en esta app o en una versión compatible.</p></div><div className="backup-actions"><button onClick={exportData}>↓ Exportar respaldo</button><button onClick={() => fileInput.current?.click()}>↑ Importar respaldo</button><input hidden ref={fileInput} type="file" accept=".json,application/json" onChange={e => void readImport(e.target.files?.[0])} /></div><small>Los datos se guardan en este navegador. El respaldo incluye ubicaciones y datos de tus clientes.</small></section>
     <section className="history"><p className="eyebrow">TU ACTIVIDAD</p><h2>Historial de visitas <span>{visits.length}</span></h2>{visits.length === 0 ? <p className="empty-state">Tu recorrido comienza con la primera visita.</p> : <ol>{[...visits].sort((a,b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).map(v => <li key={v.id}><span className="history-dot" /><div><strong>{clients.find(c => c.id === v.clientId)?.name ?? 'Cliente'}</strong><p>{new Date(v.createdAt).toLocaleString('es-CO')}</p>{v.coordinates && <small>{v.coordinates.latitude.toFixed(5)}, {v.coordinates.longitude.toFixed(5)}</small>}</div></li>)}</ol>}</section>
     <footer>TAT · A tu ritmo, en cada visita.</footer>
     {imported && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="import-title"><h2 id="import-title">Recuperar tu recorrido</h2><p className="import-copy">El archivo contiene {imported.clients.length} clientes y {imported.visits.length} visitas. Se agregarán datos nuevos sin duplicar visitas. Para clientes con el mismo código o identificador, se conservará la ficha actual.</p><button className="primary-action" onClick={confirmImport}>Combinar y guardar</button><button className="secondary-action" onClick={() => setImported(null)}>Cancelar</button></section></div>}
-    {showForm && position && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="register-title"><button className="close" onClick={() => setShowForm(false)} aria-label="Cerrar">×</button><p className="eyebrow">NUEVO CLIENTE</p><h2 id="register-title">Registrar en esta ubicación</h2><p className="coordinate">📍 {position.latitude.toFixed(6)}, {position.longitude.toFixed(6)}</p><form onSubmit={saveClient}><label>Código<input name="code" placeholder="Ej. CL-00458" required maxLength={40} autoFocus /></label><label>Nombre<input name="name" placeholder="Ej. Tienda La Esperanza" required maxLength={100} /></label><label>Barrio <small>(opcional)</small><input name="neighborhood" placeholder="Ej. La Libertad" maxLength={80} /></label><button className="primary-action" type="submit">Guardar cliente</button></form></section></div>}
+    {showForm && position && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="register-title"><button className="close" onClick={() => setShowForm(false)} aria-label="Cerrar">×</button><p className="eyebrow">NUEVO CLIENTE</p><h2 id="register-title">Registrar en esta ubicación</h2><p className="coordinate">📍 {position.latitude.toFixed(6)}, {position.longitude.toFixed(6)}</p><form onSubmit={saveClient}><label>Código<input name="code" placeholder="Ej. CL-00458" required maxLength={40} autoFocus /></label><label>Nombre<input name="name" placeholder="Ej. Tienda La Esperanza" required maxLength={100} /></label><label>Barrio <small>(opcional)</small><input name="neighborhood" placeholder="Ej. La Libertad" maxLength={80} /></label>{error && <p className="form-alert" role="alert">{error}</p>}<button className="primary-action" type="submit">Guardar cliente</button></form></section></div>}
     {editingClient && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-title"><button className="close" onClick={() => setEditingClient(null)} aria-label="Cerrar">×</button><p className="eyebrow">EDITAR CLIENTE</p><h2 id="edit-title">{editingClient.name}</h2><form onSubmit={saveEdit}><label>Código<input name="code" defaultValue={editingClient.code} required maxLength={40} autoFocus /></label><label>Nombre<input name="name" defaultValue={editingClient.name} required maxLength={100} /></label><label>Barrio <small>(opcional)</small><input name="neighborhood" defaultValue={editingClient.neighborhood} maxLength={80} /></label><label>Observaciones <small>(opcional)</small><textarea name="notes" defaultValue={editingClient.notes} maxLength={500} rows={3} /></label>{error && <p className="form-alert">{error}</p>}<button className="primary-action" type="submit">Guardar cambios</button></form></section></div>}
   </main>
 }

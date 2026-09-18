@@ -2,7 +2,7 @@
 
 ## Decisiones
 
-- **Interfaz:** React + TypeScript + Vite. Es una PWA responsive instalada desde el navegador.
+- **Interfaz:** React + TypeScript + Vite. Interfaz adaptable al celular con manifiesto y caché básica; la instalación debe verificarse en cada navegador.
 - **Mapa:** Leaflet con teselas públicas de OpenStreetMap. No usa API key en este MVP.
 - **Ubicación:** API de geolocalización del navegador; sólo se solicita al pulsar el botón correspondiente.
 - **Datos:** `localStorage`, encapsulado por `LocalClientRepository`. Los clientes sobreviven al cierre del navegador en el mismo dispositivo.
@@ -19,11 +19,11 @@ repositorio de clientes (interfaz ClientRepository)
 localStorage hoy → API/base de datos en una fase futura
 ```
 
-Los clientes conservan barrio, estado y fecha de última visita. Las visitas se guardan en un registro local separado, listo para sustituirse por una API.
+Los clientes conservan barrio, estado y fecha de última visita. Clientes y visitas se guardan juntos en una escritura local; cada visita tiene su propio identificador y referencia al cliente. El respaldo JSON versionado permite moverlos a una versión compatible.
 
 ## Límites del MVP
 
-La clasificación de barrio es manual; aún no dibuja ni detecta límites geográficos. Tampoco incluye autenticación, sincronización entre dispositivos o rutas. Para producción se recomienda un backend con autenticación y una fuente de teselas con una política adecuada al volumen esperado.
+La clasificación de barrio es manual; aún no dibuja ni detecta límites geográficos. Tampoco incluye autenticación, sincronización entre dispositivos ni cálculo de rutas por calles dentro de la aplicación. «Cómo llegar» abre Google Maps. Para producción se recomienda un backend con autenticación y una fuente de teselas con una política adecuada al volumen esperado.
 
 ## Publicación
 
