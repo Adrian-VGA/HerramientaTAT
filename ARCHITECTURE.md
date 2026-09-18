@@ -4,8 +4,8 @@
 
 - **Interfaz:** React + TypeScript + Vite. Interfaz adaptable al celular con manifiesto y caché básica; la instalación debe verificarse en cada navegador.
 - **Mapa:** Leaflet con teselas públicas de OpenStreetMap. No usa API key en este MVP.
-- **Ubicación:** API de geolocalización del navegador; sólo se solicita al pulsar el botón correspondiente.
-- **Datos:** `localStorage`, encapsulado por `LocalClientRepository`. Los clientes sobreviven al cierre del navegador en el mismo dispositivo.
+- **Ubicación:** API de geolocalización del navegador; se solicita al pulsar el botón correspondiente. El usuario puede activar o detener el seguimiento en vivo mientras mantiene la página activa.
+- **Datos:** IndexedDB, encapsulado por `LocalClientRepository`. Clientes y visitas sobreviven al cierre del navegador en el mismo dispositivo. El arranque migra el guardado anterior y conserva las claves originales de localStorage.
 
 ## Capas
 
@@ -16,10 +16,10 @@ servicios: ubicación, cálculo de distancias
         ↓
 repositorio de clientes (interfaz ClientRepository)
         ↓
-localStorage hoy → API/base de datos en una fase futura
+IndexedDB local hoy → API/sincronización en una fase futura
 ```
 
-Los clientes conservan barrio, estado y fecha de última visita. Clientes y visitas se guardan juntos en una escritura local; cada visita tiene su propio identificador y referencia al cliente. El respaldo JSON versionado permite moverlos a una versión compatible.
+Los clientes conservan barrio, estado y fecha de última visita. Clientes y visitas se guardan juntos en una transacción IndexedDB; cada visita tiene su propio identificador y referencia al cliente. El respaldo JSON versionado permite moverlos a una versión compatible.
 
 ## Límites del MVP
 

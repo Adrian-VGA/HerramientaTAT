@@ -31,3 +31,10 @@ describe('búsqueda y siguiente cliente', () => {
     expect(nearestClient([],position,true)).toBeNull()
   })
 })
+
+it('filtra pendientes y visitados combinando barrio y búsqueda', () => {
+  expect(filterClients(clients,'all','','pending').map(c=>c.id)).toEqual(['2','3'])
+  expect(filterClients(clients,'all','','visited').map(c=>c.id)).toEqual(['1'])
+  expect(filterClients(clients,'Centro','mercado','pending').map(c=>c.id)).toEqual(['3'])
+  expect(filterClients(clients,'Centro','','visited')).toEqual([])
+})

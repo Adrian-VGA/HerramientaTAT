@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { makeBackup, parseBackup, mergeBackup } from './backup'
-import { clientRepository, listVisits, saveData } from './clientRepository'
+import { clientRepository, listVisits, saveData, initializeRepository } from './clientRepository'
+import { readDatabase, writeDatabase } from './database'
+vi.mock('./database', () => ({readDatabase:vi.fn(),writeDatabase:vi.fn()}))
 import type { Client, Visit } from '../types'
 const client: Client = { id:'a', code:'C1', name:'Tienda', createdAt:'2026-09-18T10:00:00Z', coordinates:{ latitude:7.9, longitude:-72.5 }, notes:'Entrada lateral', visitStatus:'visited', lastVisitAt:'2026-09-18T11:00:00Z' }
 const visit: Visit = { id:'v1', clientId:'a', createdAt:'2026-09-18T11:00:00Z', coordinates:client.coordinates }
@@ -27,12 +29,22 @@ describe('respaldos y recorrido', () => {
     expect(() => parseBackup(JSON.stringify({...makeBackup([],[]),version:2}))).toThrow()
     expect(() => mergeBackup([client],[visit],makeBackup([client],[{...visit,createdAt:'2026-09-19T11:00:00Z'}]))).toThrow()
   })
-  it('migra los datos anteriores y guarda clientes y visitas en una sola escritura', () => {
+  it('migra los datos anteriores y guarda clientes y visitas en una sola transacción', async () => {
     const storage=new Map<string,string>([['clientes-gps.clients.v1',JSON.stringify([client])],['clientes-gps.visits.v1',JSON.stringify([visit])]])
     const setItem=vi.fn((k:string,v:string)=>storage.set(k,v))
     vi.stubGlobal('localStorage',{getItem:(k:string)=>storage.get(k)??null,setItem})
+    vi.mocked(readDatabase).mockResolvedValue(undefined); vi.mocked(writeDatabase).mockResolvedValue()
+    await initializeRepository()
     expect(clientRepository.list()).toEqual([client]); expect(listVisits()).toEqual([visit])
-    saveData([client],[visit]); expect(setItem).toHaveBeenCalledTimes(1)
+    expect(writeDatabase).toHaveBeenCalledWith({clients:[client],visits:[visit]})
+    await saveData([client],[visit]); expect(setItem).not.toHaveBeenCalled()
+    expect(clientRepository.list()).toEqual([client]); expect(listVisits()).toEqual([visit])
+  })
+  it('un fallo de base de datos no reemplaza el estado anterior', async () => {
+    vi.mocked(readDatabase).mockResolvedValue({clients:[client],visits:[visit]})
+    await initializeRepository()
+    vi.mocked(writeDatabase).mockRejectedValueOnce(new Error('Sin espacio'))
+    await expect(saveData([],[])).rejects.toThrow('Sin espacio')
     expect(clientRepository.list()).toEqual([client]); expect(listVisits()).toEqual([visit])
   })
 })

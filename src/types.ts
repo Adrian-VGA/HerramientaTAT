@@ -27,7 +27,7 @@ export type Visit = {
 
 export type ClientRepository = {
   list(): Client[]
-  create(client: Client): void
-  update(client: Client): void
-  remove(id: string): void
+  create(client: Client): Promise<void>
+  update(client: Client): Promise<void>
+  remove(id: string): Promise<void>
 }
