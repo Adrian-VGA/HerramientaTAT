@@ -3,7 +3,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Client, Coordinates } from '../types'
 
-type Props = { clients: Client[]; position: Coordinates | null }
+type Props = { clients: Client[]; position: Coordinates | null; selectedId: string | null; onSelect: (id: string) => void }
 
 const defaultCenter: L.LatLngExpression = [7.8939, -72.5078]
 
@@ -16,7 +16,7 @@ function pin(color: string, label: string) {
   })
 }
 
-export function ClientMap({ clients, position }: Props) {
+export function ClientMap({ clients, position, selectedId, onSelect }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const markers = useRef<L.LayerGroup | null>(null)
@@ -46,13 +46,16 @@ export function ClientMap({ clients, position }: Props) {
       const point: L.LatLngExpression = [client.coordinates.latitude, client.coordinates.longitude]
       points.push(point)
       const visited = client.visitStatus === 'visited'
-      L.marker(point, { icon: pin(visited ? '#16803c' : '#d58b00', visited ? '✓' : 'C') })
+      L.marker(point, { icon: pin(client.id === selectedId ? '#007aff' : visited ? '#34a36d' : '#8e8e93', visited ? '✓' : 'C') })
         .bindPopup(`<strong>${escapeHtml(client.name)}</strong><br>${escapeHtml(client.code)}`)
+        .on('click', () => onSelect(client.id))
         .addTo(markers.current!)
     })
+    const selected = clients.find(c => c.id === selectedId)
+    if (selected) { map.current.setView([selected.coordinates.latitude, selected.coordinates.longitude], 17); return }
     if (points.length === 1) map.current.setView(points[0], 16)
     if (points.length > 1) map.current.fitBounds(L.latLngBounds(points), { padding: [35, 35], maxZoom: 16 })
-  }, [clients, position])
+  }, [clients, position, selectedId, onSelect])
 
   return <div ref={container} className="map" aria-label="Mapa de clientes" />
 }
